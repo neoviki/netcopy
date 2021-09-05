@@ -1,0 +1,488 @@
+#!/bin/bash
+#
+#       Author  : Viki (a) Vignesh Natarajan 
+#       Contact : vikilabs.org
+#       Licence : MIT
+
+ARG_LIST="$@"
+ARG_COUNT="$#"
+
+DEBUG=0
+ARG0="$0"
+ARG1="$1"
+ARG2="$2"
+ARG3="$3"
+ARG4="$4"
+CMD="$ARG0"
+
+#File list usally be all the arguments between argument -> $0 and $Last
+LOCAL_FILES=""
+REMOTE_DIR=""
+ARG_LAST=${@:$#}
+ALL_ARGS_EXCLUDE_LAST_ONE=${@:1:$#-1}
+ALL_ARGS_EXCLUDE_LAST_TWO=${@:1:$#-2}
+
+SERVER_DETAILS=""
+UNAME=""
+SERVER_IP=""
+SERVER_PORT="22"
+SSH_KEY_PATH="$HOME/.ssh/netcopy"
+
+SSH_KEY_PUBLIC=""
+SSH_KEY_PRIVATE=""
+
+DEBUG_LEVEL="error"  # "quite", "debug", "error"
+
+UPLOAD=0
+ 
+get_arg(){
+  INDEX=$1
+ 
+  if [ $INDEX -lt 0 ]; then 
+     LAST_ARG_PLUS_ONE=$((ARG_COUNT + 1))
+     INDEX=$((LAST_ARG_PLUS_ONE + INDEX))
+  fi 
+
+  i=1
+  for token in ${ARG_LIST}; do
+      if [ $i -eq $INDEX ]; then
+          echo "$token"	
+          return
+      fi
+      
+      i=$((i+1))
+  done
+
+  echo ""
+}
+
+
+replace_dots_with_dash () {
+    RET=`echo "$1" | sed -r 's/[.]+/_/g' 2> /dev/null`
+    if [ $? -ne 0 ]; then
+        #MAC accepts only -E option in sed
+        RET=`echo "$1" | sed -E 's/[.]+/_/g' 2> /dev/null`
+        if [ $? -ne 0 ]; then
+            echo "[ error ] sed command failure @ replace_dots_with_dash()"
+            exit 1
+        fi
+    fi    
+    echo $RET
+}
+
+#arg1 = debug level [ debug / error ]
+#arg2 = command to execute in string format
+#arg3 = ( optional ) message to display on error
+ExecCmd () {
+
+    #debug level
+    if [ -z "$1" ]; then
+        if [ "$1" != "quite" ]; then
+            echo "[    error   ] -> \""arg 1 is missing"\""
+        fi
+    fi
+
+    #command
+    if [ -z "$2" ]; then
+        if [ "$1" != "quite" ]; then
+            echo "[    error   ] -> \""arg 2 is missing"\""
+        fi
+    fi
+
+    eval $2
+    
+    if [ $? -ne 0 ]; then
+        if [ "$1" != "quite" ]; then
+            echo "[ exec_error   ] -> \""$2"\""
+            echo
+        fi
+        #if argument 2 exist
+        if [ ! -z "$3" ]; then
+            if [ "$1" != "quite" ]; then
+                echo $3
+                echo
+            fi
+        fi
+    else
+        #command execution success
+        if [ "$1" = "debug" ]; then
+            echo "[ exec_success   ] -> \""$2"\""
+        fi
+    fi
+}
+
+
+#arg1 = debug level [ debug / error ]
+#arg2 = command to execute in string format
+#arg3 = ( optional ) message to display on error
+ExecAndExitOnError () {
+
+    #debug level
+    if [ -z "$1" ]; then
+        if [ "$1" != "quite" ]; then
+            echo "[    error   ] -> \""arg 1 is missing"\""
+        fi
+        exit 1
+    fi
+
+    #command
+    if [ -z "$2" ]; then
+        if [ "$1" != "quite" ]; then
+            echo "[    error   ] -> \""arg 2 is missing"\""
+        fi
+        exit 1
+    fi
+
+
+    eval $2
+    
+    if [ $? -ne 0 ]; then
+        if [ "$1" != "quite" ]; then
+            echo "[ exec_error   ] -> \""$2"\""
+            echo
+        fi
+
+        #if argument 2 exist
+        if [ ! -z "$3" ]; then
+            if [ "$1" != "quite" ]; then
+                echo $3
+                echo
+            fi
+        fi
+        exit 1
+    else
+        #command execution success
+        if [ "$1" = "debug" ]; then
+            echo "[ exec_success   ] -> \""$2"\""
+        fi
+    fi
+}
+
+#Inputs Validation
+validate_server_details() {
+    if [[ $SERVER_DETAILS != *"@"* ]]; then
+	echo "error: invalid server details ( $SERVER_DETAILS )"
+	exit 1
+    fi
+}
+
+#Inputs Validation
+validate_server_details_at_arg1() {
+    ret=`echo $1 |  grep "@"`
+    
+    if [ -z "$ret" ]; then
+        usage
+        exit 1
+    fi
+}
+
+
+
+parse_server_details() {
+ 
+    if [[ $SERVER_DETAILS == *"@"* ]]; then
+        STRING_BEFORE_AT=`echo $SERVER_DETAILS  | awk -F@ '{print $1}'`
+        UNAME=$STRING_BEFORE_AT
+    else
+        echo "  error: invalid server details ( $SERVER_DETAILS )"
+	exit 1
+    fi
+
+    if [[ $SERVER_DETAILS != *"/"* ]]; then
+        echo "  error: invalid remote path ( $SERVER_DETAILS )"
+	exit 1
+    fi
+
+    if [[ $SERVER_DETAILS == *":"* ]]; then
+	#SERVER_DETAILS -> user@test.com:22/home/downloads/
+
+	#STRING_AFTER_AT( user@test.com:22/home/downloads/  ) -> test.com:22/home/downloads/
+        STRING_AFTER_AT=`echo $SERVER_DETAILS  | awk -F@ '{print $2}'`
+	
+	#STRING_BEFORE_COLON( test.com:22/home/downloads/ ) -> test.com
+        STRING_BEFORE_COLON=`echo $STRING_AFTER_AT  | awk -F: '{print $1}'`
+	#SERVER_IP -> test.com
+        SERVER_IP=$STRING_BEFORE_COLON
+
+	#STRING_AFTER_COLON( test.com:22/home/downloads/ )-> 22/home/downloads/
+        STRING_AFTER_COLON=`echo $STRING_AFTER_AT  | awk -F: '{print $2}'`
+
+	#STRING_BEFORE_SLASH( 22/home/downloads/ ) -> 22
+	STRING_BEFORE_SLASH=`echo $STRING_AFTER_COLON  | awk -F/ '{print $1}'`
+	
+	#SERVER_PORT -> 22
+    	SERVER_PORT=$STRING_BEFORE_SLASH
+
+	#STRING_AFTER_FIRST_SLASH( 22/home/downloads/ ) -> home/downloads/
+	STRING_AFTER_FIRST_SLASH=`echo $STRING_AFTER_COLON  |  cut -d'/' -f2-`
+
+	#REMOTE_DIR( home/downloads/ ) -> /home/downloads/
+	REMOTE_DIR="/$STRING_AFTER_FIRST_SLASH"
+    else
+        SERVER_PORT="22"
+    	#SERVER_DETAILS -> user@test.com/home/downloads/
+
+	#STRING_AFTER_AT( user@test.com/home/downloads/ ) -> test.com/home/downloads/
+        STRING_AFTER_AT=`echo $SERVER_DETAILS  | awk -F@ '{print $2}'`
+	
+	#STRING_BEFORE_SLASH ( test.com/home/downloads/ ) -> test.com
+        STRING_BEFORE_SLASH=`echo $STRING_AFTER_AT  | awk -F/ '{print $1}'`
+	#SERVER_IP -> test.com
+        SERVER_IP=$STRING_BEFORE_SLASH
+
+	#STRING_AFTER_FIRST_SLASH ( test.com/home/downloads/ ) -> home/downloads/
+        STRING_AFTER_FIRST_SLASH=`echo $STRING_AFTER_AT  |  cut -d'/' -f2-`
+
+	#REMOTE_DIR -> /home/downloads/
+	REMOTE_DIR="/$STRING_AFTER_FIRST_SLASH"
+    fi
+
+    #If user forget to add portnumber after ':'
+    #the following check is important
+    if [ -z $SERVER_PORT ]; then
+        SERVER_PORT="22"
+    fi
+
+    echo
+    echo "  DETAILS: "
+    echo
+    echo "      SERVER_DETAILS   : $SERVER_DETAILS"
+    echo "      UNAME            : $UNAME"
+    echo "      SERVER_IP        : $SERVER_IP"
+    echo "      SERVER_PORT      : $SERVER_PORT"
+
+    if [ "$ARG1" != "-d" ]; then
+        if [ "$ARG1" != "-e" ]; then
+	    echo "      REMOTE_DIR: $REMOTE_DIR"
+        fi
+    fi
+    echo
+
+    [ -z $UNAME ] && { echo "  error: ( ${LINENO} )"; exit 1; }
+    [ -z $SERVER_IP ] && { echo "  error: ( ${LINENO} )"; exit 1; }
+    [ -z $SERVER_DETAILS ] && { echo "  error: ( ${LINENO} )"; exit 1; }
+}
+
+print_connection_details() {
+    if [ $DEBUG -eq 1 ]; then
+    echo "  Remote Host Details :"
+    echo
+    echo "    User Name         : " $UNAME
+    echo "    Server IP         : " $SERVER_IP
+    echo "    Server SSH Port   : " $SERVER_PORT
+    echo "    SSH Key Public    : " $SSH_KEY_PUBLIC
+    echo "    SSH Key Private   : " $SSH_KEY_PRIVATE
+    fi
+}
+
+
+#prerequisite check
+prerequisite_check(){
+    ExecAndExitOnError $DEBUG_LEVEL "which ssh-keygen &> /dev/null"  "Install package ( ssh-keygen ) before using this utility"
+    ExecAndExitOnError $DEBUG_LEVEL "which ssh &> /dev/null"         "Install package ( ssh ) before using this utility"
+    ExecAndExitOnError $DEBUG_LEVEL "which scp &> /dev/null"         "Install package ( scp ) before using this utility"
+    mkdir -p $SSH_KEY_PATH
+}
+
+local_delete_old_keys() {
+    if [ $DEBUG -eq 1 ]; then
+    echo "  [ status ] deleting old key ( $SSH_KEY_PATH/$SSH_KEY_PUBLIC )"
+    echo "  [ status ] deleting old key ( $SSH_KEY_PATH/$SSH_KEY_PRIVATE )"
+    fi
+
+    #Need to just check if file exist or create seperate keys for new servers
+    ExecCmd "quite" "rm -rf $SSH_KEY_PATH/$SSH_KEY_PUBLIC"
+    ExecCmd "quite" "rm -rf $SSH_KEY_PATH/$SSH_KEY_PRIVATE"
+}
+
+generate_rsa_keys() {
+    if [ $DEBUG -eq 1 ]; then
+    echo "  [ status ] generating rsa key ( $SSH_KEY_PATH/$SSH_KEY_PRIVATE )"
+    fi
+
+    ExecAndExitOnError "error" "ssh-keygen -q -N '' -t rsa -b 1024 -f $SSH_KEY_PATH/$SSH_KEY_PRIVATE &> /dev/null"
+}
+
+
+remote_upload_public_key(){
+    if [ $DEBUG -eq 1 ]; then
+    echo "  [ status ] uploading key to remote host ( $SSH_KEY_PATH/$SSH_KEY_PUBLIC )"
+    echo
+    echo
+    fi
+    ExecAndExitOnError "error" "ssh-copy-id -p $SERVER_PORT -i $SSH_KEY_PATH/$SSH_KEY_PUBLIC $UNAME@$SERVER_IP  &> /dev/null" "ssh public key upload"
+}
+
+remote_delete_public_key(){
+    REMOVE_COMMAND="rm ~/.ssh/$SSH_KEY_PUBLIC 2> /dev/null;"
+    ssh $UNAME@$SERVER_IP -p $SERVER_PORT -t "$REMOVE_COMMAND"
+}
+
+usage() {
+    echo 
+    echo "  <------------------  Usage Instruction --------------------->" 
+    echo
+    echo "  Upload files/folders to remote server without password"
+    echo
+    echo "    "$CMD " <local file/folder> <username>@<domain/ip_address>:<port> <remote_path>""  "
+    echo "" 
+    echo "  Enable uploader"
+    echo
+    echo "    "$CMD " -e <username>@<domain/ip_address>:<port>""  -> [ enable uploader ]"
+    echo
+    echo "  Disable uploader"
+    echo
+    echo "    "$CMD " -d <username>@<domain/ip_address>:<port>""  -> [ disable uploader]"
+    echo
+    echo
+    echo "  Note: <port> is optional, default port is 22"
+    echo
+    echo
+}
+
+disable_ssh_nopass(){
+    #remote_delete_public_key
+    local_delete_old_keys
+    echo "  [ status ] passwordless ssh is disabled"
+}
+
+enable_ssh_nopass(){
+    validate_server_details_at_arg1 $SERVER_DETAILS
+    disable_ssh_nopass
+    generate_rsa_keys 
+    remote_upload_public_key
+    echo "  [ status ] passwordless ssh is enabled"
+}
+
+validate_destination_path(){
+
+	if [[ "$REMOTE_DIR" != *"/home"* ]]; then
+	    echo
+	    echo "  error: copy"
+	    echo
+	    echo "  You can only copy to "/home/" directory on ( $SERVER_IP )"
+	    exit 1
+	fi
+}
+
+
+
+scp_copy() {
+    validate_destination_path
+
+    #print_connection_details
+   
+    if [ -z "$LOCAL_FILES" ]; then
+        echo
+	echo "  error: no input file"
+        echo
+	exit 1
+    fi
+
+    if [ -z "$REMOTE_DIR" ]; then
+        echo
+	echo "  error: no remote path given"
+        echo
+	exit 1
+    fi
+
+    if [ $UPLOAD -eq 1 ]; then 
+        scp -r -P $SERVER_PORT -i $SSH_KEY_PATH/$SSH_KEY_PRIVATE -o PasswordAuthentication=no $LOCAL_FILES $UNAME@$SERVER_IP:$REMOTE_DIR
+    else
+        scp -r -P $SERVER_PORT -i $SSH_KEY_PATH/$SSH_KEY_PRIVATE -o PasswordAuthentication=no $UNAME@$SERVER_IP:$REMOTE_DIR $LOCAL_FILES
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo
+    	echo "  [ error ] copy error"
+        echo
+        echo "  [ help1 ] Verify the remote server details (or)  remote server path"
+        echo
+        echo
+        echo "  [ help2 ] Verify local file or local path"
+        echo
+        echo
+        echo "  [ help3  ] Try after running the following command,"
+        echo
+        echo "       $CMD -e $SERVER_DETAILS"
+        echo
+	exit 1
+    fi
+}
+
+parse_arguments() {
+    if [ "$ARG1" = "-d" ]; then
+        SERVER_DETAILS=$ARG2
+    elif [ "$ARG1" = "-e" ]; then
+	SERVER_DETAILS=$ARG2
+    else
+	LAST_ARG=`get_arg -1`
+	LAST_BUT_ONE_ARG=`get_arg -2`
+	#If last argument has @ symbol, it is remote details
+	if [[ $LAST_ARG == *"@"* ]]; then
+	    #upload
+	    UPLOAD=1
+	    SERVER_DETAILS=$LAST_ARG
+            LOCAL_FILES=$ALL_ARGS_EXCLUDE_LAST_ONE
+	else
+	    #download
+	    UPLOAD=0 
+            LOCAL_FILES=$LAST_ARG
+	    SERVER_DETAILS=$LAST_BUT_ONE_ARG
+	fi
+
+    fi
+
+    validate_server_details 
+}
+
+generate_key_labels(){
+
+    [ -z $SERVER_IP ] && { echo "  error:  server ip missing ( ${LINENO} )"; exit 1; }
+
+    IP_LABEL="$(replace_dots_with_dash $SERVER_IP)"
+
+    [ -z $IP_LABEL ] && { echo "  error: IP_LABEL generation ( ${LINENO} )"; exit 1; }
+
+    SSH_KEY_LABEL=$UNAME"_"$IP_LABEL"_"$SERVER_PORT
+      
+    SSH_KEY_PUBLIC="$SSH_KEY_LABEL.pub"
+    SSH_KEY_PRIVATE="$SSH_KEY_LABEL" 
+
+    [ -z $SSH_KEY_PUBLIC ] && { echo "  error: ( ${LINENO} )"; exit 1; }
+    [ -z $SSH_KEY_PRIVATE ] && { echo "  error: ( ${LINENO} )"; exit 1; }
+}
+
+main_logic() {
+    if [ "$ARG1" = "-d" ]; then
+    	if [ $DEBUG -eq 1 ]; then
+        echo "  [ status ] disable password less ssh"
+        fi
+	disable_ssh_nopass
+    elif [ "$ARG1" = "-e" ]; then
+    	if [ $DEBUG -eq 1 ]; then
+        echo "  [ status ] enable password less ssh"
+	fi
+	enable_ssh_nopass
+    else
+        scp_copy
+    fi
+}
+
+usage_check(){
+    if [ -z $ARG1 ]; then
+	echo
+        echo "  [ error ] usage "
+	usage
+	exit 1
+    fi
+}
+
+
+usage_check
+prerequisite_check
+parse_arguments
+parse_server_details
+generate_key_labels
+main_logic
+
