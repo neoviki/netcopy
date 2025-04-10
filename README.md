@@ -6,10 +6,8 @@
 
 ### How to install this package?
 
-    1. git clone
-    2. cd src/
-    3. chmod +x install.sh
-    3. sudo ./install.sh
+    1. chmod +x install.sh
+    2. sudo ./install.sh
 
 ### How to use this utility?
 

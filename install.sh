@@ -1,5 +1,5 @@
 #! /bin/bash
-
+cd src
 INSTALL_DIR="/usr/bin"
 
 get_installation_directory(){
@@ -20,7 +20,7 @@ get_installation_directory(){
 
 install_package(){
     chmod +x ./netcopy
-    #check sudo 
+    #check sudo
     cp ./netcopy $INSTALL_DIR
 }
 
